@@ -1,0 +1,6 @@
+{
+  "name": "Popular Cycle Company",
+  "description": "Popular Cycle Company is a modern e-commerce platform for cycles, e-cycles, tricycles, tyres, and spare parts with AI search, AI chatbot, OTP login, and an Admin panel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
