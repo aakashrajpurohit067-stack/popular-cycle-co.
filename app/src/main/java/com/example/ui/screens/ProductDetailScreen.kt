@@ -2,7 +2,9 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -81,6 +83,8 @@ fun ProductDetailScreen(
     }
 
     val p = product!!
+    val photos = p.getPhotoList()
+    var selectedPhotoIndex by androidx.compose.runtime.remember { androidx.compose.runtime.mutableIntStateOf(0) }
 
     Box(
         modifier = modifier
@@ -100,7 +104,14 @@ fun ProductDetailScreen(
                     .height(280.dp)
                     .background(Color(0xFFF1F5F9))
             ) {
-                val img = if (p.imageResId != 0) p.imageResId else R.drawable.cycle_mtb_1791185202930
+                val currentPhoto = photos.getOrNull(selectedPhotoIndex)
+                val img: Any = when {
+                    currentPhoto != null -> java.io.File(currentPhoto)
+                    p.imageUrl.isNotBlank() -> p.imageUrl
+                    p.imageResId != 0 -> p.imageResId
+                    else -> R.drawable.cycle_mtb_1791185202930
+                }
+
                 AsyncImage(
                     model = img,
                     contentDescription = p.name,
@@ -133,6 +144,38 @@ fun ProductDetailScreen(
 
                     if (p.offerTag.isNotBlank() || p.isOnSale) {
                         OfferTagBadge(tag = if (p.offerTag.isNotBlank()) p.offerTag else "SPECIAL OFFER")
+                    }
+                }
+            }
+
+            // Multiple photo thumbnails strip if more than 1 photo available
+            if (photos.size > 1) {
+                androidx.compose.foundation.lazy.LazyRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White)
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(photos.size) { idx ->
+                        val isSelected = idx == selectedPhotoIndex
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            border = androidx.compose.foundation.BorderStroke(
+                                width = if (isSelected) 2.dp else 1.dp,
+                                color = if (isSelected) AmberAccent else Color(0xFFCBD5E1)
+                            ),
+                            modifier = Modifier
+                                .size(54.dp)
+                                .clickable { selectedPhotoIndex = idx }
+                        ) {
+                            AsyncImage(
+                                model = java.io.File(photos[idx]),
+                                contentDescription = "Photo ${idx + 1}",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                 }
             }

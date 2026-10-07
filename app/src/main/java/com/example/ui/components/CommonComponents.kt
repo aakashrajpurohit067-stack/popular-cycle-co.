@@ -157,7 +157,13 @@ fun ProductCard(
                     .height(140.dp)
                     .background(Color(0xFFF1F5F9))
             ) {
-                val imageModel = if (product.imageResId != 0) product.imageResId else R.drawable.cycle_mtb_1791185202930
+                val photoList = product.getPhotoList()
+                val imageModel: Any = when {
+                    photoList.isNotEmpty() -> java.io.File(photoList.first())
+                    product.imageUrl.isNotBlank() -> product.imageUrl
+                    product.imageResId != 0 -> product.imageResId
+                    else -> R.drawable.cycle_mtb_1791185202930
+                }
                 AsyncImage(
                     model = imageModel,
                     contentDescription = product.name,

@@ -10,11 +10,13 @@ data class ProductEntity(
     val name: String,
     val category: String,
     val brand: String = "Popular Cycle",
+    val model: String = "",
     val originalPrice: Double,
     val discountedPrice: Double,
     val stock: Int = 12,
     val imageResId: Int = 0,
     val imageUrl: String = "",
+    val imageUrisJson: String = "", // Delimited list of persistent photo paths: "path1||path2||path3"
     val description: String = "",
     val frameMaterial: String = "Aluminium Alloy",
     val gears: String = "21 Speed Shimano",
@@ -33,4 +35,9 @@ data class ProductEntity(
 
     val savingsAmount: Double
         get() = (originalPrice - discountedPrice).coerceAtLeast(0.0)
+
+    fun getPhotoList(): List<String> {
+        if (imageUrisJson.isBlank()) return emptyList()
+        return imageUrisJson.split("||").filter { it.isNotBlank() }
+    }
 }

@@ -18,21 +18,25 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.auth.AuthService
 import com.example.data.local.AppDatabase
 import com.example.data.model.UserRole
 import com.example.data.repository.CycleRepository
 import com.example.ui.components.AppBottomBar
 import com.example.ui.components.AppTopBar
 import com.example.ui.screens.AdminDashboardScreen
+import com.example.ui.screens.AdminLoginScreen
 import com.example.ui.screens.AiChatScreen
 import com.example.ui.screens.CartScreen
 import com.example.ui.screens.CategoryProductsScreen
 import com.example.ui.screens.CheckoutScreen
+import com.example.ui.screens.CustomerLoginScreen
 import com.example.ui.screens.HomeScreen
-import com.example.ui.screens.LoginScreen
 import com.example.ui.screens.OrdersScreen
 import com.example.ui.screens.ProductDetailScreen
+import com.example.ui.screens.SplashScreen
 import com.example.ui.screens.VoiceSearchDialog
+import com.example.ui.screens.WelcomeScreen
 import com.example.ui.theme.PopularCycleTheme
 import com.example.ui.viewmodel.CycleViewModel
 import com.example.ui.viewmodel.CycleViewModelFactory
@@ -43,14 +47,17 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        val database = AppDatabase.getDatabase(applicationContext, lifecycleScope)
+        val sessionManager = com.example.data.auth.SessionManager(applicationContext)
+        val database = AppDatabase.getDatabase(applicationContext)
+        val authService = AuthService(applicationContext)
         val repository = CycleRepository(
             productDao = database.productDao(),
             bannerDao = database.bannerDao(),
             orderDao = database.orderDao(),
-            cartDao = database.cartDao()
+            cartDao = database.cartDao(),
+            adminDao = database.adminDao()
         )
-        val factory = CycleViewModelFactory(repository)
+        val factory = CycleViewModelFactory(repository, authService, sessionManager)
 
         setContent {
             PopularCycleTheme {
@@ -76,8 +83,13 @@ fun PopularCycleApp(viewModel: CycleViewModel) {
     }
 
     // Handle Android system back button on sub-screens
-    BackHandler(enabled = currentScreen != Screen.Home && currentScreen != Screen.Login) {
+    BackHandler(
+        enabled = currentScreen != Screen.Home &&
+                currentScreen != Screen.Splash &&
+                currentScreen != Screen.Welcome
+    ) {
         when (currentScreen) {
+            Screen.CustomerLogin, Screen.AdminLogin -> viewModel.navigateTo(Screen.Welcome)
             Screen.ProductDetail -> viewModel.navigateTo(Screen.Home)
             Screen.Checkout -> viewModel.navigateTo(Screen.Cart)
             Screen.AdminDashboard -> {
@@ -103,8 +115,15 @@ fun PopularCycleApp(viewModel: CycleViewModel) {
         else -> null
     }
 
-    val showTopBar = currentScreen != Screen.Login
-    val showBottomBar = currentScreen != Screen.Login && currentScreen != Screen.Checkout && currentScreen != Screen.AdminDashboard
+    val isAuthOrSplash = currentScreen == Screen.Splash ||
+            currentScreen == Screen.Welcome ||
+            currentScreen == Screen.CustomerLogin ||
+            currentScreen == Screen.AdminLogin
+
+    val showTopBar = !isAuthOrSplash
+    val showBottomBar = !isAuthOrSplash &&
+            currentScreen != Screen.Checkout &&
+            currentScreen != Screen.AdminDashboard
 
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
@@ -149,7 +168,31 @@ fun PopularCycleApp(viewModel: CycleViewModel) {
                 .padding(innerPadding)
         ) {
             when (currentScreen) {
-                Screen.Login -> LoginScreen(viewModel = viewModel)
+                Screen.Splash -> SplashScreen(
+                    onSplashComplete = {
+                        if (userSession.isLoggedIn) {
+                            if (userSession.role == UserRole.ADMIN) {
+                                viewModel.navigateTo(Screen.AdminDashboard)
+                            } else {
+                                viewModel.navigateTo(Screen.Home)
+                            }
+                        } else {
+                            viewModel.navigateTo(Screen.Welcome)
+                        }
+                    }
+                )
+                Screen.Welcome -> WelcomeScreen(
+                    onSelectCustomerLogin = { viewModel.navigateTo(Screen.CustomerLogin) },
+                    onSelectAdminLogin = { viewModel.navigateTo(Screen.AdminLogin) }
+                )
+                Screen.CustomerLogin -> CustomerLoginScreen(
+                    viewModel = viewModel,
+                    onBack = { viewModel.navigateTo(Screen.Welcome) }
+                )
+                Screen.AdminLogin -> AdminLoginScreen(
+                    viewModel = viewModel,
+                    onBack = { viewModel.navigateTo(Screen.Welcome) }
+                )
                 Screen.Home -> HomeScreen(viewModel = viewModel)
                 Screen.Category -> CategoryProductsScreen(viewModel = viewModel)
                 Screen.ProductDetail -> ProductDetailScreen(viewModel = viewModel)

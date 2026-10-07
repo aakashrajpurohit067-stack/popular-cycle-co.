@@ -1,8 +1,12 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.ai.GeminiAiService
+import com.example.data.auth.AuthService
+import com.example.data.auth.SessionManager
 import com.example.data.local.entity.BannerEntity
 import com.example.data.local.entity.OrderEntity
 import com.example.data.local.entity.ProductEntity
@@ -12,6 +16,7 @@ import com.example.data.model.ProductCategory
 import com.example.data.model.UserRole
 import com.example.data.model.UserSession
 import com.example.data.repository.CycleRepository
+import com.example.util.ImageStorageHelper
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -19,10 +24,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlin.random.Random
 
 sealed class Screen(val route: String) {
-    object Login : Screen("login")
+    object Splash : Screen("splash")
+    object Welcome : Screen("welcome")
+    object CustomerLogin : Screen("customer_login")
+    object AdminLogin : Screen("admin_login")
     object Home : Screen("home")
     object Category : Screen("category")
     object ProductDetail : Screen("product_detail")
@@ -35,92 +42,246 @@ sealed class Screen(val route: String) {
 
 class CycleViewModel(
     private val repository: CycleRepository,
+    private val authService: AuthService,
+    private val sessionManager: SessionManager,
     private val aiService: GeminiAiService = GeminiAiService()
 ) : ViewModel() {
 
-    // User session
-    private val _userSession = MutableStateFlow(
-        UserSession(
-            isLoggedIn = true,
-            phone = "9876543210",
-            name = "Rahul Sharma",
-            address = "Flat 402, Green Avenue, Rohini Sector 14, Delhi - 110085",
-            role = UserRole.CUSTOMER
-        )
-    )
-    val userSession: StateFlow<UserSession> = _userSession.asStateFlow()
-
-    // Navigation State
-    private val _currentScreen = MutableStateFlow<Screen>(Screen.Home)
+    // Start on Splash Screen as requested
+    private val _currentScreen = MutableStateFlow<Screen>(Screen.Splash)
     val currentScreen: StateFlow<Screen> = _currentScreen.asStateFlow()
 
     fun navigateTo(screen: Screen) {
         _currentScreen.value = screen
     }
 
-    // Auth OTP State
-    val loginPhone = MutableStateFlow("9876543210")
-    val loginName = MutableStateFlow("Rahul Sharma")
-    val loginAddress = MutableStateFlow("Flat 402, Green Avenue, Rohini Sector 14, Delhi - 110085")
-    val loginOtp = MutableStateFlow("")
-    val generatedOtp = MutableStateFlow("")
-    val isOtpSent = MutableStateFlow(false)
-    val authError = MutableStateFlow<String?>(null)
-    val otpRole = MutableStateFlow(UserRole.CUSTOMER)
+    // User session - loaded from persistent storage
+    private val _userSession = MutableStateFlow<UserSession>(sessionManager.getSession())
+    val userSession: StateFlow<UserSession> = _userSession.asStateFlow()
 
-    fun sendOtp() {
-        if (loginPhone.value.trim().length < 10) {
-            authError.value = "Please enter a valid 10-digit mobile number"
-            return
+    // Resend OTP Cooldown from AuthService
+    val resendCooldown: StateFlow<Int> = authService.resendCooldown
+
+    // --- Customer Authentication State ---
+    val customerPhone = MutableStateFlow("9876543210")
+    val customerName = MutableStateFlow("Rahul Sharma")
+    val customerOtp = MutableStateFlow("")
+    val isCustomerOtpSent = MutableStateFlow(false)
+    val isCustomerLoading = MutableStateFlow(false)
+    val customerAuthError = MutableStateFlow<String?>(null)
+    val lastCustomerGeneratedOtp = MutableStateFlow("")
+
+    suspend fun sendCustomerOtpDirect(): String {
+        val phone = customerPhone.value.trim()
+        if (phone.length < 10) {
+            customerAuthError.value = "Please enter a valid 10-digit mobile number"
+            return ""
         }
-        val code = String.format("%06d", Random.nextInt(100000, 999999))
-        generatedOtp.value = code
-        isOtpSent.value = true
-        authError.value = null
+        isCustomerLoading.value = true
+        customerAuthError.value = null
+
+        try {
+            when (val result = authService.sendOtpSuspend(phone)) {
+                is com.example.data.auth.OtpResult.Success -> {
+                    lastCustomerGeneratedOtp.value = result.code
+                    isCustomerOtpSent.value = true
+                    customerAuthError.value = null
+                    return result.code
+                }
+                is com.example.data.auth.OtpResult.Error -> {
+                    customerAuthError.value = result.message
+                    return ""
+                }
+            }
+        } catch (e: Exception) {
+            customerAuthError.value = "Unable to dispatch OTP: ${e.localizedMessage ?: "Network timeout"}"
+            return ""
+        } finally {
+            isCustomerLoading.value = false
+        }
     }
 
-    fun quickFillTestOtp() {
-        loginOtp.value = generatedOtp.value
+    fun sendCustomerOtp() {
+        viewModelScope.launch {
+            sendCustomerOtpDirect()
+        }
     }
 
-    fun verifyOtp() {
-        if (loginOtp.value != generatedOtp.value && loginOtp.value != "123456") {
-            authError.value = "Invalid OTP. Use the simulated code above or 123456"
-            return
+    fun quickFillCustomerOtp() {
+        customerOtp.value = lastCustomerGeneratedOtp.value.ifBlank { "123456" }
+    }
+
+    suspend fun verifyCustomerOtpDirect(): Boolean {
+        isCustomerLoading.value = true
+        customerAuthError.value = null
+
+        try {
+            val verified = authService.verifyOtp(customerPhone.value, customerOtp.value)
+            if (verified) {
+                val newSession = UserSession(
+                    isLoggedIn = true,
+                    phone = customerPhone.value.trim(),
+                    name = customerName.value.ifBlank { "Customer" },
+                    address = "Doorstep Delivery Address",
+                    role = UserRole.CUSTOMER
+                )
+                _userSession.value = newSession
+                sessionManager.saveSession(newSession)
+                isCustomerOtpSent.value = false
+                customerOtp.value = ""
+                _currentScreen.value = Screen.Home
+                return true
+            } else {
+                customerAuthError.value = "Incorrect OTP code. Enter the 6-digit code or try 123456."
+                return false
+            }
+        } catch (e: Exception) {
+            customerAuthError.value = "Verification error: ${e.localizedMessage}"
+            return false
+        } finally {
+            isCustomerLoading.value = false
         }
-        _userSession.value = UserSession(
-            isLoggedIn = true,
-            phone = loginPhone.value.trim(),
-            name = loginName.value.ifBlank { "Cycle Customer" },
-            address = loginAddress.value.ifBlank { "Local Delivery Address" },
-            role = otpRole.value
-        )
-        isOtpSent.value = false
-        loginOtp.value = ""
-        authError.value = null
-        if (otpRole.value == UserRole.ADMIN) {
-            _currentScreen.value = Screen.AdminDashboard
-        } else {
-            _currentScreen.value = Screen.Home
+    }
+
+    fun verifyCustomerOtp() {
+        viewModelScope.launch {
+            verifyCustomerOtpDirect()
+        }
+    }
+
+    // --- Admin Authentication State ---
+    val adminPhone = MutableStateFlow("9876543210")
+    val adminOtp = MutableStateFlow("")
+    val isAdminOtpSent = MutableStateFlow(false)
+    val isAdminLoading = MutableStateFlow(false)
+    val adminAuthError = MutableStateFlow<String?>(null)
+    val lastAdminGeneratedOtp = MutableStateFlow("")
+
+    suspend fun sendAdminOtpDirect(): String {
+        val phone = adminPhone.value.trim()
+        if (phone.length < 10) {
+            adminAuthError.value = "Please enter a valid 10-digit mobile number"
+            return ""
+        }
+        isAdminLoading.value = true
+        adminAuthError.value = null
+
+        try {
+            when (val result = authService.sendOtpSuspend(phone)) {
+                is com.example.data.auth.OtpResult.Success -> {
+                    lastAdminGeneratedOtp.value = result.code
+                    isAdminOtpSent.value = true
+                    adminAuthError.value = null
+                    return result.code
+                }
+                is com.example.data.auth.OtpResult.Error -> {
+                    adminAuthError.value = result.message
+                    return ""
+                }
+            }
+        } catch (e: Exception) {
+            adminAuthError.value = "Unable to dispatch Admin OTP: ${e.localizedMessage ?: "Network timeout"}"
+            return ""
+        } finally {
+            isAdminLoading.value = false
+        }
+    }
+
+    fun sendAdminOtp() {
+        viewModelScope.launch {
+            sendAdminOtpDirect()
+        }
+    }
+
+    fun quickFillAdminOtp() {
+        adminOtp.value = lastAdminGeneratedOtp.value.ifBlank { "123456" }
+    }
+
+    suspend fun verifyAdminOtpDirect(): Boolean {
+        isAdminLoading.value = true
+        adminAuthError.value = null
+
+        try {
+            // First verify OTP
+            val isOtpValid = authService.verifyOtp(adminPhone.value, adminOtp.value)
+            if (!isOtpValid) {
+                adminAuthError.value = "Incorrect OTP code. Please enter the valid code."
+                return false
+            }
+
+            // Secure Admin Authorization Check in Database
+            val adminRecord = repository.verifyAdminAuthorization(adminPhone.value)
+
+            if (adminRecord != null && adminRecord.isActive) {
+                val newSession = UserSession(
+                    isLoggedIn = true,
+                    phone = adminPhone.value.trim(),
+                    name = adminRecord.name,
+                    address = "Popular Cycle Headquarters",
+                    role = UserRole.ADMIN
+                )
+                _userSession.value = newSession
+                sessionManager.saveSession(newSession)
+                isAdminOtpSent.value = false
+                adminOtp.value = ""
+                _currentScreen.value = Screen.AdminDashboard
+                return true
+            } else {
+                adminAuthError.value = "Access Denied: +91 ${adminPhone.value} is not an authorized administrator. Use Customer Login or contact store management."
+                return false
+            }
+        } catch (e: Exception) {
+            adminAuthError.value = "Authorization failure: ${e.localizedMessage}"
+            return false
+        } finally {
+            isAdminLoading.value = false
+        }
+    }
+
+    fun verifyAdminOtp() {
+        viewModelScope.launch {
+            verifyAdminOtpDirect()
         }
     }
 
     fun toggleRole() {
-        val newRole = if (_userSession.value.role == UserRole.CUSTOMER) UserRole.ADMIN else UserRole.CUSTOMER
-        _userSession.value = _userSession.value.copy(role = newRole)
-        if (newRole == UserRole.ADMIN) {
-            _currentScreen.value = Screen.AdminDashboard
-        } else {
+        val currentRole = _userSession.value.role
+        if (currentRole == UserRole.ADMIN) {
+            // Switch to shopping mode
+            val updated = _userSession.value.copy(role = UserRole.CUSTOMER)
+            _userSession.value = updated
+            sessionManager.saveSession(updated)
             _currentScreen.value = Screen.Home
+        } else {
+            // Switch back to admin panel if previously authenticated as admin
+            viewModelScope.launch {
+                val adminRecord = repository.verifyAdminAuthorization(_userSession.value.phone)
+                if (adminRecord != null) {
+                    val updated = _userSession.value.copy(role = UserRole.ADMIN)
+                    _userSession.value = updated
+                    sessionManager.saveSession(updated)
+                    _currentScreen.value = Screen.AdminDashboard
+                } else {
+                    _currentScreen.value = Screen.AdminLogin
+                }
+            }
         }
     }
 
     fun logout() {
-        _userSession.value = _userSession.value.copy(isLoggedIn = false)
-        _currentScreen.value = Screen.Login
+        val clearSession = UserSession(
+            isLoggedIn = false,
+            phone = "",
+            name = "",
+            address = "",
+            role = UserRole.CUSTOMER
+        )
+        _userSession.value = clearSession
+        sessionManager.clearSession()
+        _currentScreen.value = Screen.Welcome
     }
 
-    // Products & Banners
+    // --- Products & Banners Flows ---
     val allProducts: StateFlow<List<ProductEntity>> = repository.allProducts
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
@@ -158,7 +319,6 @@ class CycleViewModel(
     // Search and Voice Search
     val searchQuery = MutableStateFlow("")
     val isVoiceSearchDialogOpen = MutableStateFlow(false)
-    val isAiSearchMode = MutableStateFlow(false)
     val aiSearchReasoning = MutableStateFlow<String?>(null)
 
     private val _aiSearchResults = MutableStateFlow<List<ProductEntity>>(emptyList())
@@ -246,7 +406,7 @@ class CycleViewModel(
         val user = _userSession.value
         checkoutCustomerName.value = user.name
         checkoutPhone.value = user.phone
-        checkoutAddress.value = user.address
+        checkoutAddress.value = user.address.ifBlank { "Flat 402, Green Avenue, Delhi - 110085" }
         _currentScreen.value = Screen.Checkout
     }
 
@@ -265,7 +425,7 @@ class CycleViewModel(
             orderNumber = orderNo,
             customerName = checkoutCustomerName.value.ifBlank { "Customer" },
             customerPhone = checkoutPhone.value.ifBlank { "9876543210" },
-            deliveryAddress = checkoutAddress.value.ifBlank { "Hub Delivery" },
+            deliveryAddress = checkoutAddress.value.ifBlank { "Doorstep Delivery" },
             totalAmount = finalAmount,
             paymentMethod = checkoutPaymentMethod.value,
             orderStatus = "Placed",
@@ -305,7 +465,7 @@ class CycleViewModel(
         listOf(
             ChatMessage(
                 sender = "assistant",
-                message = "Welcome to Popular Cycle Company! 🚲\n\nI am your AI Cycling Advisor. How can I help you today? You can ask me about cycle sizing, geared vs single-speed bikes, e-cycles, tyres, or delivery & offers."
+                message = "Welcome to Popular Cycle Company! 🚲\n\nI am your AI Cycling Advisor. How can I help you today? Ask about cycle sizing, geared vs single-speed bikes, e-cycles, tyres, or delivery & offers."
             )
         )
     )
@@ -340,12 +500,19 @@ class CycleViewModel(
     fun saveProduct(product: ProductEntity) {
         viewModelScope.launch {
             repository.saveProduct(product)
+            // If the currently viewed product was edited, update its selection
+            if (selectedProduct.value?.id == product.id) {
+                selectedProduct.value = product
+            }
         }
     }
 
     fun deleteProduct(id: Long) {
         viewModelScope.launch {
             repository.deleteProduct(id)
+            if (selectedProduct.value?.id == id) {
+                selectedProduct.value = null
+            }
         }
     }
 
@@ -359,5 +526,16 @@ class CycleViewModel(
         viewModelScope.launch {
             repository.deleteBanner(id)
         }
+    }
+
+    suspend fun saveUploadedImages(context: Context, uris: List<Uri>): List<String> {
+        val savedPaths = mutableListOf<String>()
+        for (uri in uris) {
+            val savedPath = ImageStorageHelper.saveImageToInternalStorage(context, uri)
+            if (savedPath != null) {
+                savedPaths.add(savedPath)
+            }
+        }
+        return savedPaths
     }
 }

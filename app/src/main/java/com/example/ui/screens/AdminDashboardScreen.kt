@@ -19,6 +19,21 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
+import coil.compose.AsyncImage
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AdminPanelSettings
@@ -266,6 +281,7 @@ fun AdminDashboardScreen(
     if (showProductDialog) {
         ProductEditDialog(
             initialProduct = productToEdit,
+            viewModel = viewModel,
             onDismiss = { showProductDialog = false },
             onSave = { product ->
                 viewModel.saveProduct(product)
@@ -754,12 +770,17 @@ private fun MetricCard(
 @Composable
 private fun ProductEditDialog(
     initialProduct: ProductEntity?,
+    viewModel: CycleViewModel,
     onDismiss: () -> Unit,
     onSave: (ProductEntity) -> Unit
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
     var name by remember { mutableStateOf(initialProduct?.name ?: "") }
-    var category by remember { mutableStateOf(initialProduct?.category ?: ProductCategory.MENS.displayName) }
     var brand by remember { mutableStateOf(initialProduct?.brand ?: "Popular Cycle") }
+    var model by remember { mutableStateOf(initialProduct?.model ?: "") }
+    var category by remember { mutableStateOf(initialProduct?.category ?: ProductCategory.MENS.displayName) }
     var originalPriceStr by remember { mutableStateOf(initialProduct?.originalPrice?.toInt()?.toString() ?: "15000") }
     var discountedPriceStr by remember { mutableStateOf(initialProduct?.discountedPrice?.toInt()?.toString() ?: "10999") }
     var stockStr by remember { mutableStateOf(initialProduct?.stock?.toString() ?: "10") }
@@ -770,6 +791,18 @@ private fun ProductEditDialog(
     var offerTag by remember { mutableStateOf(initialProduct?.offerTag ?: "SPECIAL OFFER") }
     var isOnSale by remember { mutableStateOf(initialProduct?.isOnSale ?: true) }
     var description by remember { mutableStateOf(initialProduct?.description ?: "Engineered with precision for peak cycling performance.") }
+
+    var existingPhotoPaths by remember { mutableStateOf(initialProduct?.getPhotoList()?.toMutableList() ?: mutableListOf<String>()) }
+    var newlyPickedUris by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var isSaving by remember { mutableStateOf(false) }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            newlyPickedUris = newlyPickedUris + uris
+        }
+    }
 
     var expandedCatDropdown by remember { mutableStateOf(false) }
 
@@ -789,13 +822,194 @@ private fun ProductEditDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // Photo Upload Section
+                Text(
+                    text = "Bicycle Photos (${existingPhotoPaths.size + newlyPickedUris.size} selected):",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = NavyDark
+                )
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.testTag("admin_upload_photos_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AddPhotoAlternate,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = NavyPrimary
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Add Photos from Gallery", fontSize = 11.sp, color = NavyPrimary)
+                    }
+
+                    if (existingPhotoPaths.isNotEmpty() || newlyPickedUris.isNotEmpty()) {
+                        Text(
+                            text = "Clear All",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Red,
+                            modifier = Modifier
+                                .clickable {
+                                    existingPhotoPaths = mutableListOf()
+                                    newlyPickedUris = emptyList()
+                                }
+                                .padding(4.dp)
+                        )
+                    }
+                }
+
+                // Photo Preview Carousel with replace/remove/cover controls
+                if (existingPhotoPaths.isNotEmpty() || newlyPickedUris.isNotEmpty()) {
+                    LazyRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // Existing saved photos
+                        items(existingPhotoPaths.size) { idx ->
+                            val path = existingPhotoPaths[idx]
+                            Box(modifier = Modifier.size(80.dp)) {
+                                AsyncImage(
+                                    model = java.io.File(path),
+                                    contentDescription = "Existing Photo",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(8.dp))
+                                )
+                                // Cover Photo indicator
+                                if (idx == 0) {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = AmberAccent,
+                                        modifier = Modifier
+                                            .align(Alignment.BottomStart)
+                                            .padding(3.dp)
+                                    ) {
+                                        Text(
+                                            text = "COVER",
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.Black,
+                                            modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                                // Remove button
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color.Red,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .align(Alignment.TopEnd)
+                                        .clickable {
+                                            val updated = existingPhotoPaths.toMutableList()
+                                            updated.removeAt(idx)
+                                            existingPhotoPaths = updated
+                                        }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Remove",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Newly picked URIs
+                        items(newlyPickedUris.size) { idx ->
+                            val uri = newlyPickedUris[idx]
+                            val isCover = existingPhotoPaths.isEmpty() && idx == 0
+                            Box(modifier = Modifier.size(80.dp)) {
+                                AsyncImage(
+                                    model = uri,
+                                    contentDescription = "New Photo",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(RoundedCornerShape(8.dp))
+                                )
+                                if (isCover) {
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = AmberAccent,
+                                        modifier = Modifier
+                                            .align(Alignment.BottomStart)
+                                            .padding(3.dp)
+                                    ) {
+                                        Text(
+                                            text = "COVER",
+                                            fontSize = 8.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.Black,
+                                            modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+                                // Remove button
+                                Surface(
+                                    shape = CircleShape,
+                                    color = Color.Red,
+                                    modifier = Modifier
+                                        .size(20.dp)
+                                        .align(Alignment.TopEnd)
+                                        .clickable {
+                                            val updated = newlyPickedUris.toMutableList()
+                                            updated.removeAt(idx)
+                                            newlyPickedUris = updated
+                                        }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Remove",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Product Name") },
+                    label = { Text("Product Name (e.g. Popular Dominator Pro)") },
                     modifier = Modifier.fillMaxWidth().testTag("product_name_input"),
                     singleLine = true
                 )
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = brand,
+                        onValueChange = { brand = it },
+                        label = { Text("Brand") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true
+                    )
+                    OutlinedTextField(
+                        value = model,
+                        onValueChange = { model = it },
+                        label = { Text("Model Code") },
+                        modifier = Modifier.weight(1f).testTag("product_model_input"),
+                        singleLine = true
+                    )
+                }
 
                 // Category selector
                 ExposedDropdownMenuBox(
@@ -896,33 +1110,49 @@ private fun ProductEditDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val orig = originalPriceStr.toDoubleOrNull() ?: 10000.0
-                    val disc = discountedPriceStr.toDoubleOrNull() ?: 8000.0
-                    val stk = stockStr.toIntOrNull() ?: 10
-                    val product = ProductEntity(
-                        id = initialProduct?.id ?: 0L,
-                        name = name.ifBlank { "Popular Cycle Bike" },
-                        category = category,
-                        brand = brand,
-                        originalPrice = orig,
-                        discountedPrice = disc,
-                        stock = stk,
-                        imageResId = initialProduct?.imageResId ?: R.drawable.cycle_mtb_1791185202930,
-                        description = description,
-                        frameMaterial = frame,
-                        gears = gears,
-                        brakes = brakes,
-                        wheelSize = wheelSize,
-                        offerTag = offerTag,
-                        isOnSale = isOnSale,
-                        isFeatured = initialProduct?.isFeatured ?: true
-                    )
-                    onSave(product)
+                    if (!isSaving) {
+                        isSaving = true
+                        coroutineScope.launch {
+                            val savedPaths = viewModel.saveUploadedImages(context, newlyPickedUris)
+                            val allPhotos = existingPhotoPaths + savedPaths
+                            val orig = originalPriceStr.toDoubleOrNull() ?: 10000.0
+                            val disc = discountedPriceStr.toDoubleOrNull() ?: 8000.0
+                            val stk = stockStr.toIntOrNull() ?: 10
+
+                            val product = ProductEntity(
+                                id = initialProduct?.id ?: 0L,
+                                name = name.ifBlank { "Popular Cycle Bike" },
+                                category = category,
+                                brand = brand.ifBlank { "Popular Cycle" },
+                                model = model,
+                                originalPrice = orig,
+                                discountedPrice = disc,
+                                stock = stk,
+                                imageResId = initialProduct?.imageResId ?: R.drawable.cycle_mtb_1791185202930,
+                                imageUrisJson = allPhotos.joinToString("||"),
+                                description = description,
+                                frameMaterial = frame,
+                                gears = gears,
+                                brakes = brakes,
+                                wheelSize = wheelSize,
+                                offerTag = offerTag,
+                                isOnSale = isOnSale,
+                                isFeatured = initialProduct?.isFeatured ?: true
+                            )
+                            onSave(product)
+                            isSaving = false
+                        }
+                    }
                 },
+                enabled = !isSaving,
                 colors = ButtonDefaults.buttonColors(containerColor = NavyPrimary),
                 modifier = Modifier.testTag("save_product_button")
             ) {
-                Text("Save Product")
+                if (isSaving) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
+                } else {
+                    Text("Save Product")
+                }
             }
         },
         dismissButton = {

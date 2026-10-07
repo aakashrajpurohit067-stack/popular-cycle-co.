@@ -1,9 +1,11 @@
 package com.example.data.repository
 
+import com.example.data.local.dao.AdminDao
 import com.example.data.local.dao.BannerDao
 import com.example.data.local.dao.CartDao
 import com.example.data.local.dao.OrderDao
 import com.example.data.local.dao.ProductDao
+import com.example.data.local.entity.AdminEntity
 import com.example.data.local.entity.BannerEntity
 import com.example.data.local.entity.CartItemEntity
 import com.example.data.local.entity.OrderEntity
@@ -16,7 +18,8 @@ class CycleRepository(
     private val productDao: ProductDao,
     private val bannerDao: BannerDao,
     private val orderDao: OrderDao,
-    private val cartDao: CartDao
+    private val cartDao: CartDao,
+    private val adminDao: AdminDao
 ) {
     // Product queries
     val allProducts: Flow<List<ProductEntity>> = productDao.getAllProducts()
@@ -104,4 +107,12 @@ class CycleRepository(
     suspend fun removeFromCart(productId: Long) = cartDao.deleteCartItem(productId)
 
     suspend fun clearCart() = cartDao.clearCart()
+
+    // Admin Authorization Security
+    suspend fun verifyAdminAuthorization(phone: String): AdminEntity? {
+        val cleanPhone = phone.replace("+91", "").replace(" ", "").replace("-", "").trim()
+        return adminDao.getAdminByPhone(cleanPhone)
+    }
+
+    suspend fun registerAdmin(admin: AdminEntity) = adminDao.insertAdmin(admin)
 }
